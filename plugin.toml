@@ -1,0 +1,64 @@
+id = "lmaule/pia-vpn"
+name = "PIA VPN"
+version = "1.0.0"
+# Highest level used: surface_container / error_container colour roles (43),
+# require() of shared.luau (22), Luau closures as callbacks (9).
+plugin_api = 43
+author = "lmaule"
+license = "MIT"
+icon = "shield-lock"
+description = "Sign in to Private Internet Access, connect, switch locations and see your tunnel status from the bar."
+tags = ["bar", "panel", "shortcut", "network", "vpn"]
+
+# The official PIA client (AUR: piavpn-bin) provides the daemon and piactl.
+dependencies = ["piactl", "bash"]
+
+[[setting]]
+key = "notify_changes"
+type = "bool"
+label_key = "settings.notify_changes.label"
+description_key = "settings.notify_changes.description"
+default = true
+
+[[setting]]
+key = "connect_on_select"
+type = "bool"
+label_key = "settings.connect_on_select.label"
+description_key = "settings.connect_on_select.description"
+default = true
+
+# Headless: owns the status stream and publishes it to every other entry.
+[[service]]
+id = "status"
+entry = "service.luau"
+
+[[widget]]
+id = "widget"
+entry = "widget.luau"
+
+  [[widget.setting]]
+  key = "label"
+  type = "select"
+  label_key = "settings.label.label"
+  description_key = "settings.label.description"
+  default = "none"
+  options = [
+    { value = "none", label_key = "settings.label.none" },
+    { value = "region", label_key = "settings.label.region" },
+    { value = "ip", label_key = "settings.label.ip" },
+    { value = "status", label_key = "settings.label.status" },
+  ]
+
+[[panel]]
+id = "panel"
+entry = "panel.luau"
+width = 420
+height = 640
+placement = "attached"
+position = "auto"
+open_near_click = true
+dismiss_on_outside_click = true
+
+[[shortcut]]
+id = "shortcut"
+entry = "shortcut.luau"

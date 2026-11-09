@@ -1,0 +1,4 @@
+# Runtime files never belong in the repo
+*.cred
+*.log
+.DS_Store
