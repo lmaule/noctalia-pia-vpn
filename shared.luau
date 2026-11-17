@@ -283,6 +283,93 @@ function M.regionShort(id)
   return city ~= "" and city or country
 end
 
+-- ── latency ─────────────────────────────────────────────────────────────────
+-- `pia.sh latency` returns the daemon's state dump plus the cli names from
+-- `piactl get regions`. Locations in the dump carry an internal id and a
+-- latency (ms, null until measured); the cli name is built from display
+-- metadata exactly as piactl does it (cli/src/getcommand.cpp,
+-- getRegionCliName). Both lists share one order (dedicated IPs, then grouped
+-- locations), which is the fallback when a built name isn't a known region.
+
+local function enUS(text)
+  return type(text) == "table" and type(text["en-US"]) == "string" and text["en-US"] or ""
+end
+
+local function latencyMs(loc)
+  local ms = type(loc) == "table" and tonumber(loc.latency) or nil
+  return ms ~= nil and ms >= 0 and math.floor(ms + 0.5) or nil
+end
+
+-- returns { [cliName] = ms } ("auto" = the fastest location's latency)
+function M.parseLatency(result)
+  local out = {}
+  local state = type(result) == "table" and result.state or nil
+  if type(state) ~= "table" then return out end
+  local meta = type(state.regionsMetadata) == "table" and state.regionsMetadata or {}
+  local countries = type(meta.countryDisplays) == "table" and meta.countryDisplays or {}
+  local displays = type(meta.regionDisplays) == "table" and meta.regionDisplays or {}
+
+  -- Dump order, plus how many locations each country groups (nested naming).
+  local locs, perCountry = {}, {}
+  for _, loc in ipairs(type(state.dedicatedIpLocations) == "table" and state.dedicatedIpLocations or {}) do
+    table.insert(locs, loc)
+  end
+  for _, group in ipairs(type(state.groupedLocations) == "table" and state.groupedLocations or {}) do
+    local list = type(group) == "table" and type(group.locations) == "table" and group.locations or {}
+    if group.code ~= nil then perCountry[group.code] = #list end
+    for _, loc in ipairs(list) do table.insert(locs, loc) end
+  end
+
+  local names, known = {}, {}
+  for _, name in ipairs(type(result.regions) == "table" and result.regions or {}) do
+    if name ~= "auto" then
+      table.insert(names, name)
+      known[name] = true
+    end
+  end
+
+  local function cliName(loc)
+    local id = tostring(loc.id or "")
+    local display = type(displays[id]) == "table" and displays[id] or {}
+    local country = display.country
+    local cd = country ~= nil and type(countries[country]) == "table" and countries[country] or {}
+    local name
+    if country ~= nil and (perCountry[country] or 0) > 1 then
+      name = enUS(cd.prefix) .. enUS(display.name)
+    else
+      name = enUS(cd.name)
+    end
+    if name == "" then name = id end
+    if type(loc.dedicatedIp) == "string" and loc.dedicatedIp ~= "" then
+      name = `dedicated-{name}-{loc.dedicatedIp}`
+    end
+    return (string.gsub(string.lower(name), "%s", "-"))
+  end
+
+  local sameOrder = #names == #locs
+  for i, loc in ipairs(locs) do
+    if type(loc) == "table" then
+      local ms = latencyMs(loc)
+      if ms ~= nil then
+        local name = cliName(loc)
+        if not known[name] and sameOrder then name = names[i] end
+        if known[name] then out[name] = ms end
+      end
+    end
+  end
+
+  local vpn = type(state.vpnLocations) == "table" and state.vpnLocations or {}
+  out.auto = latencyMs(vpn.bestLocation)
+  return out
+end
+
+-- "42 ms" and a colour role: quick, fine, slow.
+function M.latencyLabel(ms)
+  if ms == nil then return nil, nil end
+  local color = ms < 100 and "primary" or (ms < 250 and "on_surface_variant" or "error")
+  return M.tr("value.latency", { ms = ms }), color
+end
+
 function M.protocolName(p)
   if p == "wireguard" then return "WireGuard" end
   if p == "openvpn" then return "OpenVPN" end

@@ -25,6 +25,7 @@
   "value.pf_attempting": "Requesting…",
   "value.pf_unavailable": "Unavailable here",
   "value.pf_waiting": "Waiting…",
+  "value.latency": "{ms} ms",
 
   "hero.connected_to": "Connected to {region}",
   "hero.ready": "Ready · {region}",

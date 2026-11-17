@@ -28,11 +28,15 @@ local searchGen = 0                -- bumps to give the search box a fresh key (
 local showPassword = false
 local passwordToggled = false      -- refocus the password box after showing/hiding it
 local lastDuration = nil           -- "connected for" text last drawn, to redraw when it ticks
+local latency = {}                 -- region cli name -> ms, from the daemon's own measurements
+local latencyLoading = false
+local latencyAt = 0                -- when latency was last asked for (ms)
 local expandedCountries = {}       -- country name -> unfolded in the Locations list
 local overrides = {}               -- setting -> value, optimistic until the daemon agrees
 
 local PROTOCOLS = { "wireguard", "openvpn" }
 local MAX_RECENTS = 3
+local LATENCY_EVERY_MS = 60000     -- the daemon re-measures about once a minute
 
 -- ── persistence ─────────────────────────────────────────────────────────────
 
@@ -99,6 +103,19 @@ local function loadRegions(force)
   end)
 end
 
+-- Latency is a nicety: a failed read just leaves the labels off.
+local function loadLatency(force)
+  if latencyLoading then return end
+  if not force and noctalia.nowMs() - latencyAt < LATENCY_EVERY_MS then return end
+  latencyLoading = true
+  latencyAt = noctalia.nowMs()
+  shared.call("latency", function(result, err)
+    latencyLoading = false
+    if result ~= nil and not err then latency = shared.parseLatency(result) end
+    if isOpen then render() end
+  end)
+end
+
 local function fail(message)
   busy = ""
   errorText = message or tr("error.generic")
@@ -127,6 +144,12 @@ end
 
 local function nothing()
   return ui.box({ width = 0, height = 0 })
+end
+
+local function latencyLabel(ms)
+  local text, color = shared.latencyLabel(ms)
+  if text == nil then return nothing() end
+  return ui.label({ text = text, fontSize = 11, color = color, maxLines = 1 })
 end
 
 -- A glyph in a soft tinted disc, the visual anchor of every state.
@@ -411,6 +434,7 @@ local function regionRow(id, status, child)
   table.insert(kids, ui.glyph({ name = id == "auto" and "bolt" or "map-pin", size = child and 14 or 16,
                                 color = current and "primary" or "on_surface_variant" }))
   table.insert(kids, ui.column({ gap = 0, flexGrow = 1, align = "start" }, textKids))
+  table.insert(kids, latencyLabel(latency[id]))
   table.insert(kids, trailing)
   table.insert(kids, favButton)
   local state = `{current and "on" or "off"}_{switching and "sw" or (dim and "dim" or "idle")}`
@@ -426,6 +450,11 @@ local function countryRow(country, ids, status, open)
   local currentId = chosenRegion or status.region
   local holdsCurrent = table.find(ids, currentId) ~= nil
   local dim = dimmed(busy == "region" and table.find(ids, chosenRegion) ~= nil)
+  local fastest = nil
+  for _, id in ipairs(ids) do
+    local ms = latency[id]
+    if ms ~= nil and (fastest == nil or ms < fastest) then fastest = ms end
+  end
   local subtitle = tr("locations.count", { n = #ids })
   if holdsCurrent then
     local _, city = shared.regionParts(currentId)
@@ -447,6 +476,7 @@ local function countryRow(country, ids, status, open)
       ui.label({ text = subtitle, fontSize = 11, maxLines = 1,
                  color = holdsCurrent and "primary" or "on_surface_variant" }),
     }),
+    latencyLabel(fastest),
     (holdsCurrent and not open) and ui.glyph({ name = busy == "region" and "loader" or "check", size = 16,
                                                 color = "primary" }) or nothing(),
     ui.column({ width = 28, height = 28, align = "center", justify = "center" }, {
@@ -685,6 +715,7 @@ render = function()
     body = loginView()
   else
     loadRegions(false)
+    loadLatency(false)
     body = mainView(status)
   end
 
@@ -702,6 +733,8 @@ noctalia.state.watch("connectedWith", function() render() end)
 -- Second ticks while open; redraw only when "connected for" text changes.
 function update()
   if not isOpen then return end
+  local k = shared.kind()
+  if k == "connected" or k == "disconnected" or k == "busy" then loadLatency(false) end
   local now = shared.kind() == "connected" and shared.durationLabel() or nil
   if now ~= lastDuration then render() end
 end
@@ -730,7 +763,10 @@ end
 function onRefresh()
   errorText = ""
   shared.requestRefresh()
-  if shared.kind() ~= "signedout" then loadRegions(true) end
+  if shared.kind() ~= "signedout" then
+    loadRegions(true)
+    loadLatency(true)
+  end
   render()
 end
 
@@ -785,6 +821,7 @@ function onSignOut()
     confirmLogout = false
     if err then fail(err); return end
     noctalia.state.set("regions", {})
+    latency, latencyAt = {}, 0
     shared.requestRefresh()
     render()
   end)
