@@ -50,8 +50,11 @@ To add the tile to the control centre, go to Settings → Control Center shortcu
     location, VPN IP, public IP, protocol and forwarded port, plus a
     Connect/Disconnect button. Click an IP to copy it. While disconnected, the
     public IP is flagged as your real IP.
-  - **Locations**: search every PIA region and star your favourites. Your
-    last three picks appear under **Recent**. Picking a location while
+  - **Locations**: search every PIA region and star your favourites. Each
+    location shows the latency PIA measured to it, in your accent colour
+    under 100 ms and in red over 250 ms. A
+    country shows its fastest city, and **Automatic** shows the fastest
+    location overall. Your last three picks appear under **Recent**. Picking a location while
     disconnected connects to it. While connected, PIA moves the tunnel, and
     you get a "Moved to …" notification once it has.
   - **Settings**: WireGuard/OpenVPN, port forwarding, allow LAN, and sign out.
@@ -83,7 +86,9 @@ leftover file the next time it starts. The password is never put on a command
 line, logged or stored. The plugin makes no network requests of its own. When
 it checks whether you're signed in, it filters PIA's account dump down to
 `loggedIn` and `username` inside the pipe, so the dump's password and token
-fields never reach the plugin. After
+fields never reach the plugin. For latency, it reads PIA's `daemon-state` dump,
+which holds locations, latencies and connection status rather than account
+credentials. After
 sign-in the PIA daemon keeps its own auth token, the same way the official app
 does. **Sign out** runs `piactl logout`, which discards that token.
 

@@ -3,7 +3,7 @@
 # prints exactly one JSON object per call, so the Luau side never has to parse
 # free-form text. Works on its own from a keybind too:
 #
-#   pia.sh status | regions | connect | disconnect | toggle | reconnect
+#   pia.sh status | regions | latency | connect | disconnect | toggle | reconnect
 #   pia.sh login <credentials-file>      (line 1 username, line 2 password; file is deleted)
 #   pia.sh logout
 #   pia.sh set-region <id|auto>
@@ -87,16 +87,35 @@ cmd_status() {
     "$(js "$(pget portforward)")" "$(js "$(pget requestportforward)")" "$(js "$(pget allowlan)")")"
 }
 
-cmd_regions() {
-  local out first=1 list="" r
-  out=$("$PIA" -t "$TIMEOUT" get regions 2>&1) || fail "${out:-Could not list regions}"
+# `piactl get regions` as a JSON array (in REGION_LIST) of cli names.
+region_list() {
+  local out first=1 r
+  REGION_LIST=""
+  out=$("$PIA" -t "$TIMEOUT" get regions 2>&1) || { REGION_ERR=${out:-Could not list regions}; return 1; }
   while IFS= read -r r; do
     r=${r//[[:space:]]/}
     [[ -z "$r" ]] && continue
-    if (( first )); then first=0; else list+=","; fi
-    list+=$(js "$r")
+    if (( first )); then first=0; else REGION_LIST+=","; fi
+    REGION_LIST+=$(js "$r")
   done <<<"$out"
-  ok ",\"regions\":[${list}]"
+}
+
+cmd_regions() {
+  region_list || fail "$REGION_ERR"
+  ok ",\"regions\":[${REGION_LIST}]"
+}
+
+# Per-location latency lives only in the daemon's state dump, keyed by internal
+# location id rather than the cli names above. Hand the dump (already JSON) and
+# the cli names to the plugin, which maps one onto the other. The state dump
+# holds locations, metadata and connection info, not account credentials.
+cmd_latency() {
+  local state
+  state=$("$PIA" -t "$TIMEOUT" -u dump daemon-state 2>/dev/null) || fail "Could not read latency"
+  [[ "$state" =~ ^[[:space:]]*\{ ]] || fail "Could not read latency"
+  region_list || fail "$REGION_ERR"
+  printf '{"ok":true,"regions":[%s],"state":%s}\n' "$REGION_LIST" "$state"
+  exit 0
 }
 
 cmd_login() {
@@ -210,6 +229,7 @@ case "${1-status}" in
   watch)      cmd_watch ;;
   status)     cmd_status ;;
   regions)    cmd_regions ;;
+  latency)    cmd_latency ;;
   login)      cmd_login "${2-}" ;;
   logout)     cmd_logout ;;
   connect)    cmd_connect ;;
