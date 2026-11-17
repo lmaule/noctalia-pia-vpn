@@ -13,7 +13,12 @@ local function render()
     label = shared.stateLabel(status)
   end
   shortcut.setLabel(label)
-  shortcut.setIcon("shield-check", "shield-off")
+  if kind == "busy" then
+    -- Half a shield until the tunnel is really up (or really down).
+    shortcut.setIcon("shield-half")
+  else
+    shortcut.setIcon("shield-check", "shield-off")
+  end
   shortcut.setActive(kind == "connected" or kind == "busy")
 end
 

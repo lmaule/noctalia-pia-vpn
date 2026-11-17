@@ -18,6 +18,8 @@
   "field.public_ip": "Public IP",
   "field.protocol": "Protocol",
   "field.port": "Forwarded port",
+  "field.public_ip_exposed": "Your real IP",
+  "field.connected_for": "Connected for",
 
   "value.off": "Off",
   "value.pf_attempting": "Requesting…",
@@ -26,6 +28,11 @@
 
   "hero.connected_to": "Connected to {region}",
   "hero.ready": "Ready · {region}",
+  "hero.connected_for": "Connected for {time}",
+
+  "duration.under_minute": "under a minute",
+  "duration.minutes": "{m} min",
+  "duration.hours": "{h} h {m} min",
 
   "action.connect": "Connect",
   "action.disconnect": "Disconnect",
@@ -36,6 +43,9 @@
   "action.copy": "Copy command",
   "action.favorite": "Add to favorites",
   "action.unfavorite": "Remove from favorites",
+  "action.reconnect_now": "Reconnect now",
+  "action.copy_value": "Click to copy",
+  "action.clear_search": "Clear search",
 
   "hint.right_click": "Right click",
 
@@ -44,6 +54,7 @@
 
   "locations.search": "Search countries and cities",
   "locations.favorites": "Favorites",
+  "locations.recent": "Recent",
   "locations.all": "All locations",
   "locations.count": "{n} locations",
   "locations.standard": "Standard",
@@ -57,6 +68,8 @@
   "login.subtitle": "Use the username and password from your Private Internet Access account.",
   "login.username": "Username",
   "login.password": "Password",
+  "login.show_password": "Show password",
+  "login.hide_password": "Hide password",
   "login.username_hint": "PIA usernames usually look like p1234567.",
   "login.sign_in": "Sign in",
   "login.signing_in": "Signing in…",
@@ -69,7 +82,7 @@
   "settings.port_forward_desc": "Ask for an inbound port. Not available in US locations.",
   "settings.allow_lan": "Allow LAN traffic",
   "settings.allow_lan_desc": "Reach printers and other devices on your local network.",
-  "settings.reconnect_note": "Protocol and port forwarding changes take effect the next time you connect.",
+  "settings.reconnect_note": "Reconnect to apply your new protocol or port forwarding setting.",
 
   "account.title": "PIA account",
   "account.signed_in": "Signed in",
@@ -88,6 +101,8 @@
   "notify.interrupted": "VPN connection interrupted. Reconnecting…",
   "notify.signed_in": "Signed in as {user}",
   "notify.copied": "Command copied to clipboard",
+  "notify.copied_value": "Copied {value}",
+  "notify.moved": "Moved to {region}",
 
   "error.engine": "Couldn't run the PIA helper script.",
   "error.timeout": "The PIA service took too long to answer.",

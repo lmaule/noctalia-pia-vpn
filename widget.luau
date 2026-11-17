@@ -31,6 +31,10 @@ local function render()
   if kind == "connected" then
     table.insert(rows, { noctalia.tr("field.vpn_ip"), shared.ipLabel(status.vpnip) })
     table.insert(rows, { noctalia.tr("field.protocol"), shared.protocolName(status.protocol) })
+    local duration = shared.durationLabel()
+    if duration ~= nil then
+      table.insert(rows, { noctalia.tr("field.connected_for"), duration })
+    end
   end
   if kind == "connected" or kind == "disconnected" then
     table.insert(rows, { noctalia.tr("hint.right_click"),
@@ -41,7 +45,15 @@ end
 
 noctalia.state.watch("status", render)
 noctalia.state.watch("pending", render)
+noctalia.state.watch("connectedSince", render)
 render()
+
+-- Keeps the tooltip's "Connected for" current between status changes.
+if noctalia.setUpdateInterval then noctalia.setUpdateInterval(30000) end
+
+function update()
+  render()
+end
 
 function onClick()
   noctalia.togglePanel(shared.PANEL_ID)

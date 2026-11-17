@@ -40,16 +40,23 @@ To add the tile to the control centre, go to Settings → Control Center shortcu
 ## Usage
 
 - **Bar shield**: the colour and icon follow the tunnel state (protected,
-  connecting, not protected, signed out, service down). Left click opens the
-  panel. Right click connects or disconnects.
+  connecting, not protected, signed out, service down). "Not protected" shows
+  in the error colour, so you notice it. Left click opens the panel. Right
+  click connects or disconnects. The tooltip shows how long you've been
+  connected.
 - **Panel**:
   - **Sign in**: enter your PIA username (`p1234567`) and password.
-  - **Status card**: shows the state, location, VPN IP, public IP, protocol and
-    forwarded port, plus a Connect/Disconnect button.
-  - **Locations**: search every PIA region and star your favourites.
-    Picking a location while disconnected connects to it. While connected, PIA
-    moves the tunnel.
+  - **Status card**: shows the state, how long you've been connected,
+    location, VPN IP, public IP, protocol and forwarded port, plus a
+    Connect/Disconnect button. Click an IP to copy it. While disconnected, the
+    public IP is flagged as your real IP.
+  - **Locations**: search every PIA region and star your favourites. Your
+    last three picks appear under **Recent**. Picking a location while
+    disconnected connects to it. While connected, PIA moves the tunnel, and
+    you get a "Moved to …" notification once it has.
   - **Settings**: WireGuard/OpenVPN, port forwarding, allow LAN, and sign out.
+    When a protocol or port-forwarding change needs a new connection, a
+    **Reconnect now** button appears.
 - **Keybinds**:
 
   ```sh
