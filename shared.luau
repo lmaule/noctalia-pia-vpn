@@ -105,6 +105,40 @@ function M.toggleConnection(onError)
   end
 end
 
+-- Disconnect, wait for the tunnel to drop, connect again: applies protocol and
+-- port-forwarding changes, which PIA only reads when a connection starts.
+function M.reconnect(onError)
+  M.setPending("reconnecting")
+  M.call("reconnect", function(_, err)
+    if err then
+      M.setPending("")
+      if onError then onError(err) end
+    else
+      -- The engine has asked for the new connection: the service takes over
+      -- from here, and starts the connected clock and settings afresh.
+      M.setPending("connecting")
+      noctalia.state.set("connectedSince", 0)
+    end
+    M.requestRefresh()
+  end)
+end
+
+-- When the current tunnel came up (ms), or nil while there is none.
+function M.connectedSince()
+  local since = tonumber(noctalia.state.get("connectedSince")) or 0
+  return since > 0 and since or nil
+end
+
+-- "under a minute", "12 min", "1 h 12 min"; nil when not connected.
+function M.durationLabel()
+  local since = M.connectedSince()
+  if since == nil then return nil end
+  local mins = math.floor(math.max(0, noctalia.nowMs() - since) / 60000)
+  if mins < 1 then return noctalia.tr("duration.under_minute") end
+  if mins < 60 then return M.tr("duration.minutes", { m = mins }) end
+  return M.tr("duration.hours", { h = math.floor(mins / 60), m = mins % 60 })
+end
+
 function M.pending()
   local p = noctalia.state.get("pending")
   return type(p) == "string" and p or ""
@@ -119,7 +153,7 @@ function M.kind(status)
   if status.daemon == false then return "offline" end
   if status.loggedIn == false then return "signedout" end
   local p = M.pending()
-  if p == "connecting" or p == "disconnecting" then return "busy" end
+  if p == "connecting" or p == "disconnecting" or p == "reconnecting" then return "busy" end
   local s = status.state or ""
   if s == "Connected" then return "connected" end
   if s == "Disconnected" or s == "" then return "disconnected" end
@@ -139,7 +173,7 @@ function M.stateLabel(status)
   if p == "disconnecting" or status.state == "Disconnecting" then
     return noctalia.tr("state.disconnecting")
   end
-  if status.state == "Interrupted" or status.state == "Reconnecting"
+  if p == "reconnecting" or status.state == "Interrupted" or status.state == "Reconnecting"
       or status.state == "DisconnectingToReconnect" then
     return noctalia.tr("state.reconnecting")
   end
@@ -157,7 +191,8 @@ end
 function M.colorFor(kind)
   if kind == "connected" then return "primary" end
   if kind == "busy" then return "tertiary" end
-  if kind == "missing" or kind == "offline" then return "error" end
+  -- Unprotected traffic is the state worth noticing, so it is not grey.
+  if kind == "disconnected" or kind == "missing" or kind == "offline" then return "error" end
   return "on_surface_variant"
 end
 

@@ -1,6 +1,6 @@
 id = "lmaule/pia-vpn"
 name = "PIA VPN"
-version = "1.0.0"
+version = "1.1.0"
 # Highest level used: surface_container / error_container colour roles (43),
 # require() of shared.luau (22), Luau closures as callbacks (9).
 plugin_api = 43

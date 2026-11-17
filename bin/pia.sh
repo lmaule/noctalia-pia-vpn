@@ -3,7 +3,7 @@
 # prints exactly one JSON object per call, so the Luau side never has to parse
 # free-form text. Works on its own from a keybind too:
 #
-#   pia.sh status | regions | connect | disconnect | toggle
+#   pia.sh status | regions | connect | disconnect | toggle | reconnect
 #   pia.sh login <credentials-file>      (line 1 username, line 2 password; file is deleted)
 #   pia.sh logout
 #   pia.sh set-region <id|auto>
@@ -141,6 +141,18 @@ cmd_disconnect() {
   ok
 }
 
+# Protocol and port-forwarding changes only apply to a new connection, so
+# drop the tunnel, wait (up to ~10 s) until it is really down, then connect.
+cmd_reconnect() {
+  run_pia disconnect || fail "${LAST_MSG:-Could not disconnect}"
+  local i
+  for ((i = 0; i < 20; i++)); do
+    [[ "$(pget connectionstate)" == Disconnected ]] && break
+    sleep 0.5
+  done
+  cmd_connect
+}
+
 cmd_toggle() {
   case "$(pget connectionstate)" in
     Disconnected|"") cmd_connect ;;
@@ -203,6 +215,7 @@ case "${1-status}" in
   connect)    cmd_connect ;;
   disconnect) cmd_disconnect ;;
   toggle)     cmd_toggle ;;
+  reconnect)  cmd_reconnect ;;
   set-region) cmd_set_region "${2-}" ;;
   set)        cmd_set "${2-}" "${3-}" ;;
   *)          fail "Unknown command: $1" ;;

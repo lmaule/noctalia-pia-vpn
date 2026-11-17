@@ -23,35 +23,59 @@ local confirmLogout = false
 local regionsLoading = false
 local chosenRegion = nil           -- optimistic until the daemon reports it
 local favorites = {}
+local recents = {}                 -- newest first, at most MAX_RECENTS region ids
+local searchGen = 0                -- bumps to give the search box a fresh key (clears it)
+local showPassword = false
+local passwordToggled = false      -- refocus the password box after showing/hiding it
+local lastDuration = nil           -- "connected for" text last drawn, to redraw when it ticks
 local expandedCountries = {}       -- country name -> unfolded in the Locations list
 local overrides = {}               -- setting -> value, optimistic until the daemon agrees
 
 local PROTOCOLS = { "wireguard", "openvpn" }
+local MAX_RECENTS = 3
 
 -- ── persistence ─────────────────────────────────────────────────────────────
 
-local function favoritesPath()
+local function dataPath(name)
   local data = noctalia.pluginDataDir()
-  return data ~= nil and data ~= "" and data .. "/favorites.json" or nil
+  return data ~= nil and data ~= "" and `{data}/{name}.json` or nil
+end
+
+local function loadList(name)
+  local path = dataPath(name)
+  if path == nil or not noctalia.fileExists(path) then return {} end
+  local decoded = noctalia.json.decode(noctalia.readFile(path) or "")
+  return type(decoded) == "table" and decoded or {}
+end
+
+local function saveList(name, list)
+  local path = dataPath(name)
+  if path ~= nil then noctalia.writeFile(path, noctalia.json.encode(list)) end
 end
 
 local function loadFavorites()
-  local path = favoritesPath()
-  if path == nil or not noctalia.fileExists(path) then return end
-  local decoded = noctalia.json.decode(noctalia.readFile(path) or "")
-  if type(decoded) == "table" then
-    favorites = {}
-    for _, id in ipairs(decoded) do favorites[id] = true end
+  favorites = {}
+  for _, id in ipairs(loadList("favorites")) do favorites[id] = true end
+  recents = {}
+  for _, id in ipairs(loadList("recents")) do
+    if type(id) == "string" and #recents < MAX_RECENTS then table.insert(recents, id) end
   end
 end
 
 local function saveFavorites()
-  local path = favoritesPath()
-  if path == nil then return end
   local list = {}
   for id in pairs(favorites) do table.insert(list, id) end
   table.sort(list)
-  noctalia.writeFile(path, noctalia.json.encode(list))
+  saveList("favorites", list)
+end
+
+local function pushRecent(id)
+  if id == "auto" then return end
+  local idx = table.find(recents, id)
+  if idx ~= nil then table.remove(recents, idx) end
+  table.insert(recents, 1, id)
+  while #recents > MAX_RECENTS do table.remove(recents) end
+  saveList("recents", recents)
 end
 
 loadFavorites()
@@ -84,6 +108,21 @@ end
 local function settingValue(status, key)
   if overrides[key] ~= nil then return overrides[key] end
   return status[key]
+end
+
+-- True when the protocol or port-forwarding setting differs from what the
+-- live tunnel came up with, so only a reconnect would apply it.
+local function needsReconnect(status)
+  if shared.kind(status) ~= "connected" then return false end
+  local with = noctalia.state.get("connectedWith")
+  if type(with) ~= "table" then return false end
+  return settingValue(status, "protocol") ~= with.protocol
+    or settingValue(status, "requestportforward") ~= with.requestportforward
+end
+
+local function copyValue(value)
+  noctalia.copyToClipboard(value, "text/plain")
+  noctalia.notify(tr("title"), tr("notify.copied_value", { value = value }))
 end
 
 local function nothing()
@@ -187,10 +226,24 @@ local function loginView()
     }),
     ui.column({ gap = 6, align = "stretch" }, {
       ui.label({ text = tr("login.password"), fontSize = 12, fontWeight = "bold", color = "on_surface_variant" }),
-      ui.input({ key = `password_{formGen}`, value = "", password = true, placeholder = "••••••••",
-                 enabled = not signingIn,
-                 onChange = function(v) password = v end,
-                 onSubmit = function(v) password = v; onSignIn() end }),
+      ui.row({ gap = 6, align = "center" }, {
+        -- Inputs are uncontrolled, so showing/hiding swaps in a fresh box
+        -- seeded with what was typed so far.
+        ui.input({ key = `password_{formGen}_{showPassword and "shown" or "hidden"}`, value = password,
+                   password = not showPassword, placeholder = "••••••••", flexGrow = 1,
+                   focus = passwordToggled, enabled = not signingIn,
+                   onChange = function(v) password = v end,
+                   onSubmit = function(v) password = v; onSignIn() end }),
+        ui.button({ key = `pw_toggle_{showPassword and "shown" or "hidden"}`,
+                    glyph = showPassword and "eye-off" or "eye", variant = "ghost", controlSize = "sm",
+                    tooltip = tr(showPassword and "login.hide_password" or "login.show_password"),
+                    enabled = not signingIn,
+                    onClick = function()
+                      showPassword = not showPassword
+                      passwordToggled = true
+                      render()
+                    end }),
+      }),
     }),
     ui.button({ key = `signin_{signingIn and "busy" or "idle"}`,
                 text = signingIn and tr("login.signing_in") or tr("login.sign_in"),
@@ -207,13 +260,21 @@ end
 
 -- ── connected / disconnected view ───────────────────────────────────────────
 
-local function stat(key, label, value, glyph)
-  return ui.column({ key = `stat_{key}`, flexGrow = 1, gap = 2, align = "start", minWidth = 0 }, {
+-- opts.color tints the stat (e.g. "error"); opts.copy makes a real value
+-- copy itself to the clipboard on click.
+local function stat(key, label, value, glyph, opts)
+  opts = opts or {}
+  local copyable = opts.copy == true and value ~= "—"
+  local tint = opts.color or "on_surface_variant"
+  return ui.column({ key = `stat_{key}_{copyable and "copy" or "plain"}_{opts.color or "none"}`, flexGrow = 1,
+                     gap = 2, align = "start", minWidth = 0, radius = 6,
+                     tooltip = copyable and tr("action.copy_value") or nil,
+                     onClick = copyable and function() copyValue(value) end or nil }, {
     ui.row({ gap = 4, align = "center" }, {
-      ui.glyph({ name = glyph, size = 12, color = "on_surface_variant" }),
-      ui.label({ text = label, fontSize = 11, color = "on_surface_variant", maxLines = 1 }),
+      ui.glyph({ name = glyph, size = 12, color = tint }),
+      ui.label({ text = label, fontSize = 11, color = tint, maxLines = 1 }),
     }),
-    ui.label({ text = value, fontSize = 13, fontWeight = "bold", maxLines = 1 }),
+    ui.label({ text = value, fontSize = 13, fontWeight = "bold", maxLines = 1, color = opts.color }),
   })
 end
 
@@ -245,20 +306,38 @@ local function heroCard(status)
                          variant = "primary", controlSize = "lg", onClick = "onToggleConnection" })
   end
 
+  -- Disconnected means traffic leaves under your real IP: say so.
+  local exposed = kind == "disconnected"
+  local fill, border = "surface_container", "outline_variant"
+  if connected then
+    fill, border = "primary/0.08", "primary/0.35"
+  elseif exposed then
+    fill, border = "error/0.06", "error/0.35"
+  end
+
+  local titleKids = {
+    ui.label({ text = shared.stateLabel(status), fontSize = 20, fontWeight = "bold",
+               color = connected and "primary" or (exposed and "error" or "on_surface"), maxLines = 1 }),
+    ui.label({ text = subtitle, fontSize = 13, color = "on_surface_variant", maxLines = 1 }),
+  }
+  local duration = connected and shared.durationLabel() or nil
+  if duration ~= nil then
+    table.insert(titleKids, ui.label({ text = tr("hero.connected_for", { time = duration }), fontSize = 11,
+                                       color = "on_surface_variant", maxLines = 1 }))
+  end
+
   return ui.column({ key = `hero_{kind}`, gap = 16, padding = 18, radius = 16, align = "stretch",
-                     fill = connected and "primary/0.08" or "surface_container",
-                     border = connected and "primary/0.35" or "outline_variant", borderWidth = 1 }, {
+                     fill = fill, border = border, borderWidth = 1 }, {
     ui.row({ gap = 16, align = "center" }, {
       badge(shared.glyphFor(kind), color, 60),
-      ui.column({ gap = 4, flexGrow = 1, align = "start" }, {
-        ui.label({ text = shared.stateLabel(status), fontSize = 20, fontWeight = "bold",
-                   color = connected and "primary" or "on_surface", maxLines = 1 }),
-        ui.label({ text = subtitle, fontSize = 13, color = "on_surface_variant", maxLines = 1 }),
-      }),
+      ui.column({ gap = 4, flexGrow = 1, align = "start" }, titleKids),
     }),
     ui.row({ gap = 12, align = "start" }, {
-      stat("vpnip", tr("field.vpn_ip"), connected and shared.ipLabel(status.vpnip) or "—", "lock"),
-      stat("pubip", tr("field.public_ip"), shared.ipLabel(status.pubip), "world"),
+      stat("vpnip", tr("field.vpn_ip"), connected and shared.ipLabel(status.vpnip) or "—", "lock",
+           { copy = true }),
+      stat("pubip", exposed and tr("field.public_ip_exposed") or tr("field.public_ip"),
+           shared.ipLabel(status.pubip), exposed and "alert-triangle" or "world",
+           { copy = true, color = exposed and "error" or nil }),
     }),
     ui.row({ gap = 12, align = "start" }, {
       stat("protocol", tr("field.protocol"), shared.protocolName(settingValue(status, "protocol")), "route"),
@@ -276,10 +355,22 @@ end
 
 -- ── locations tab ───────────────────────────────────────────────────────────
 
+-- While a location change is in flight, the row being switched to shows a
+-- loader and the rest dim, since they ignore clicks until it finishes.
+local function switchingTo(id)
+  return busy == "region" and chosenRegion == id
+end
+
+local function dimmed(holdsTarget)
+  return busy == "region" and not holdsTarget
+end
+
 -- One selectable server. `child` rows sit under their country's header, so
 -- they only need the city and are indented past the header's globe.
 local function regionRow(id, status, child)
   local current = (chosenRegion or status.region) == id
+  local switching = switchingTo(id)
+  local dim = dimmed(switching)
   local fav = favorites[id] == true
   local country, city = shared.regionParts(id)
   local textKids
@@ -298,7 +389,9 @@ local function regionRow(id, status, child)
     end
   end
   local trailing = nothing()
-  if current then
+  if switching then
+    trailing = ui.glyph({ name = "loader", size = 16, color = "primary" })
+  elseif current then
     trailing = ui.glyph({ name = "check", size = 16, color = "primary" })
   end
   local favButton = id == "auto" and ui.column({ width = 28, height = 28 }, {})
@@ -320,10 +413,10 @@ local function regionRow(id, status, child)
   table.insert(kids, ui.column({ gap = 0, flexGrow = 1, align = "start" }, textKids))
   table.insert(kids, trailing)
   table.insert(kids, favButton)
-  return ui.row({ key = `region_{child and "c" or "r"}_{id}_{current and "on" or "off"}`, gap = 10,
+  local state = `{current and "on" or "off"}_{switching and "sw" or (dim and "dim" or "idle")}`
+  return ui.row({ key = `region_{child and "c" or "r"}_{id}_{state}`, gap = 10,
                   align = "center", paddingH = 8, paddingV = child and 4 or 6, radius = 10,
-                  fill = current and "primary/0.10" or nil,
-                  tooltip = id,
+                  fill = current and "primary/0.10" or nil, opacity = dim and 0.45 or 1,
                   onClick = function() onSelectRegion(id) end }, kids)
 end
 
@@ -332,14 +425,15 @@ end
 local function countryRow(country, ids, status, open)
   local currentId = chosenRegion or status.region
   local holdsCurrent = table.find(ids, currentId) ~= nil
+  local dim = dimmed(busy == "region" and table.find(ids, chosenRegion) ~= nil)
   local subtitle = tr("locations.count", { n = #ids })
   if holdsCurrent then
     local _, city = shared.regionParts(currentId)
     subtitle = city ~= "" and city or tr("locations.standard")
   end
-  local state = `{open and "open" or "shut"}_{holdsCurrent and "cur" or "no"}`
+  local state = `{open and "open" or "shut"}_{holdsCurrent and "cur" or "no"}_{dim and "dim" or "idle"}`
   return ui.row({ key = `country_{country}_{state}`, gap = 10, align = "center",
-                  paddingH = 8, paddingV = 6, radius = 10,
+                  paddingH = 8, paddingV = 6, radius = 10, opacity = dim and 0.45 or 1,
                   fill = (holdsCurrent and not open) and "primary/0.10" or (open and "surface_container" or nil),
                   onClick = function()
                     expandedCountries[country] = not open
@@ -353,7 +447,8 @@ local function countryRow(country, ids, status, open)
       ui.label({ text = subtitle, fontSize = 11, maxLines = 1,
                  color = holdsCurrent and "primary" or "on_surface_variant" }),
     }),
-    (holdsCurrent and not open) and ui.glyph({ name = "check", size = 16, color = "primary" }) or nothing(),
+    (holdsCurrent and not open) and ui.glyph({ name = busy == "region" and "loader" or "check", size = 16,
+                                                color = "primary" }) or nothing(),
     ui.column({ width = 28, height = 28, align = "center", justify = "center" }, {
       ui.glyph({ name = open and "chevron-down" or "chevron-right", size = 16, color = "on_surface_variant" }),
     }),
@@ -399,6 +494,16 @@ local function locationsTab(status)
   end
   table.sort(order)
 
+  -- Recent picks that still exist and aren't already starred.
+  local known = {}
+  for _, id in ipairs(all) do known[id] = true end
+  local recentRows = {}
+  for _, id in ipairs(recents) do
+    if known[id] and not favorites[id] and matches(id, q) then
+      table.insert(recentRows, regionRow(id, status, false))
+    end
+  end
+
   local rows = {}
   for _, country in ipairs(order) do
     local ids = groups[country]
@@ -432,6 +537,10 @@ local function locationsTab(status)
   if matches("auto", q) then
     table.insert(list, regionRow("auto", status, false))
   end
+  if #recentRows > 0 then
+    table.insert(list, sectionLabel(tr("locations.recent")))
+    for _, r in ipairs(recentRows) do table.insert(list, r) end
+  end
   if #favRows > 0 then
     table.insert(list, sectionLabel(tr("locations.favorites")))
     for _, r in ipairs(favRows) do table.insert(list, r) end
@@ -448,8 +557,19 @@ local function locationsTab(status)
   end
 
   return ui.column({ key = "tab_locations", flexGrow = 1, gap = 10, align = "stretch" }, {
-    ui.input({ key = "search", value = query, placeholder = tr("locations.search"),
-               onChange = function(v) query = v; render() end }),
+    ui.row({ key = "search_row", gap = 6, align = "center" }, {
+      -- Focused when the tab opens; clearing swaps in a fresh, empty box.
+      ui.input({ key = `search_{searchGen}`, value = query, placeholder = tr("locations.search"),
+                 focus = true, flexGrow = 1,
+                 onChange = function(v) query = v; render() end }),
+      query ~= "" and ui.button({ key = "search_clear", glyph = "x", variant = "ghost", controlSize = "sm",
+                                  tooltip = tr("action.clear_search"),
+                                  onClick = function()
+                                    query = ""
+                                    searchGen += 1
+                                    render()
+                                  end }) or nothing(),
+    }),
     ui.scroll({ key = "region_list", flexGrow = 1, gap = 2 }, list),
   })
 end
@@ -497,9 +617,15 @@ local function settingsTab(status)
   end
 
   local note = nothing()
-  if shared.kind(status) == "connected" then
-    note = ui.label({ text = tr("settings.reconnect_note"), fontSize = 11, color = "on_surface_variant",
-                      maxLines = 2 })
+  if needsReconnect(status) then
+    note = ui.row({ key = "reconnect_note", gap = 10, align = "center", padding = 12, radius = 12,
+                    fill = "tertiary/0.12" }, {
+      ui.glyph({ name = "info-circle", size = 18, color = "tertiary" }),
+      ui.label({ text = tr("settings.reconnect_note"), fontSize = 11, flexGrow = 1, maxLines = 3 }),
+      ui.button({ key = `reconnect_{busy == "" and "idle" or "busy"}`, text = tr("action.reconnect_now"),
+                  glyph = "refresh", variant = "primary", controlSize = "sm",
+                  enabled = busy == "" and shared.pending() == "", onClick = "onReconnect" }),
+    })
   end
 
   return ui.scroll({ key = "tab_settings", flexGrow = 1, gap = 8 }, {
@@ -544,6 +670,8 @@ render = function()
     if status[key] == value then overrides[key] = nil end
   end
 
+  lastDuration = kind == "connected" and shared.durationLabel() or nil
+
   local body
   if kind == "loading" then
     body = messageView("loading", "shield-half", "on_surface_variant", tr("state.loading"), tr("msg.loading"))
@@ -568,12 +696,22 @@ end
 
 noctalia.state.watch("status", function() render() end)
 noctalia.state.watch("pending", function() render() end)
+noctalia.state.watch("connectedSince", function() render() end)
+noctalia.state.watch("connectedWith", function() render() end)
+
+-- Second ticks while open; redraw only when "connected for" text changes.
+function update()
+  if not isOpen then return end
+  local now = shared.kind() == "connected" and shared.durationLabel() or nil
+  if now ~= lastDuration then render() end
+end
 
 -- ── handlers ────────────────────────────────────────────────────────────────
 
 function onOpen(_context)
   isOpen = true
   confirmLogout = false
+  if panel.setWantsSecondTicks then panel.setWantsSecondTicks(true) end
   shared.requestRefresh()
   render()
 end
@@ -581,6 +719,8 @@ end
 function onClose()
   isOpen = false
   password = ""
+  showPassword, passwordToggled = false, false
+  if panel.setWantsSecondTicks then panel.setWantsSecondTicks(false) end
 end
 
 function onCloseClicked()
@@ -627,6 +767,7 @@ function onSignIn()
       return
     end
     username, formGen = "", formGen + 1
+    showPassword, passwordToggled = false, false
     tab = "locations"
     noctalia.notify(tr("title"), tr("notify.signed_in", { user = user }))
     shared.requestRefresh()
@@ -655,6 +796,13 @@ function onToggleConnection()
   render()
 end
 
+function onReconnect()
+  if busy ~= "" or shared.pending() ~= "" then return end
+  errorText = ""
+  shared.reconnect(function(err) fail(err) end)
+  render()
+end
+
 function onSelectRegion(id)
   local status = shared.status()
   if busy ~= "" or (chosenRegion or status.region) == id and shared.kind(status) == "connected" then return end
@@ -669,6 +817,7 @@ function onSelectRegion(id)
       fail(err)
       return
     end
+    pushRecent(id)
     -- PIA moves a live tunnel by itself; from idle, picking a place means "go there".
     if shared.kind() == "disconnected" and noctalia.getConfig("connect_on_select") ~= false then
       shared.toggleConnection(function(e) fail(e) end)

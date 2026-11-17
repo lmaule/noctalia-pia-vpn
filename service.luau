@@ -7,8 +7,58 @@
 local shared = require("./shared.luau")
 
 local lastKind = nil
-local lastRegion = nil
+local connectedRegion = nil   -- where the tunnel last came up; nil once it is down
+local connectedIp = nil
 local streamSeq = 0
+
+-- Remember when the tunnel came up, and which settings it came up with, so
+-- the UI can show "connected for" and know when a reconnect would apply a
+-- changed protocol or port-forwarding setting.
+local function trackConnection(status)
+  local up = status.state == "Connected" and status.loggedIn ~= false and status.daemon ~= false
+  local since = tonumber(noctalia.state.get("connectedSince")) or 0
+  if up then
+    if since == 0 then
+      noctalia.state.set("connectedSince", noctalia.nowMs())
+      noctalia.state.set("connectedWith", {
+        protocol = status.protocol,
+        requestportforward = status.requestportforward,
+      })
+    end
+  elseif since ~= 0 then
+    noctalia.state.set("connectedSince", 0)
+  end
+end
+
+-- Connect, disconnect and drop notifications, plus "Moved to" when the tunnel
+-- changes location. The region setting changes before the tunnel moves, so a
+-- move counts once the tunnel has cycled or its VPN IP has changed.
+local function notifyChange(status, kind, prevKind)
+  local message, isError = nil, false
+  if kind == "connected" then
+    if prevKind ~= "connected" then
+      local moved = connectedRegion ~= nil and status.region ~= connectedRegion
+      message = shared.tr(moved and "notify.moved" or "notify.connected",
+                          { region = shared.regionName(status.region) })
+      connectedRegion, connectedIp = status.region, status.vpnip
+    elseif status.region ~= connectedRegion and status.vpnip ~= connectedIp
+        and shared.ipLabel(status.vpnip) ~= "—" then
+      message = shared.tr("notify.moved", { region = shared.regionName(status.region) })
+      connectedRegion, connectedIp = status.region, status.vpnip
+    end
+  elseif kind == "disconnected" then
+    if prevKind == "connected" then message = noctalia.tr("notify.disconnected") end
+    connectedRegion, connectedIp = nil, nil
+  elseif status.state == "Interrupted" and prevKind == "connected" then
+    message, isError = noctalia.tr("notify.interrupted"), true
+  end
+  if message == nil or prevKind == nil or not noctalia.getConfig("notify_changes") then return end
+  if isError then
+    noctalia.notifyError(noctalia.tr("title"), message)
+  else
+    noctalia.notify(noctalia.tr("title"), message)
+  end
+end
 
 local function publish(status)
   status.phase = "ready"
@@ -17,7 +67,8 @@ local function publish(status)
 
   -- An action's optimistic state ends once the daemon agrees with it.
   -- The daemon takes over the moment it leaves "Disconnected"; a stale guess
-  -- (a refused connect, say) gives up after 15 s.
+  -- (a refused connect, say) gives up after 15 s. A reconnect is handed over
+  -- as "connecting" by shared.reconnect once its new connection is asked for.
   local pending = shared.pending()
   local age = noctalia.nowMs() - (tonumber(noctalia.state.get("pendingAt")) or 0)
   if pending ~= "" and (
@@ -28,19 +79,11 @@ local function publish(status)
     shared.setPending("")
   end
 
+  trackConnection(status)
+
   local kind = shared.kind(status)
-  if noctalia.getConfig("notify_changes") and prevKind ~= nil and kind ~= prevKind then
-    if kind == "connected" then
-      noctalia.notify(noctalia.tr("title"),
-        shared.tr("notify.connected", { region = shared.regionName(status.region) }))
-    elseif kind == "disconnected" and prevKind == "connected" then
-      noctalia.notify(noctalia.tr("title"), noctalia.tr("notify.disconnected"))
-    elseif status.state == "Interrupted" and prevKind == "connected" then
-      noctalia.notifyError(noctalia.tr("title"), noctalia.tr("notify.interrupted"))
-    end
-  end
+  notifyChange(status, kind, prevKind)
   lastKind = kind
-  lastRegion = status.region
 end
 
 local function onLine(line)
@@ -89,6 +132,7 @@ end
 
 shredStaleCredentials()
 noctalia.state.set("status", { phase = "loading" })
+noctalia.state.set("connectedSince", 0)
 shared.setPending("")
 startStream()
 refreshNow()
